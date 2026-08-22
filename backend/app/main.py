@@ -15,6 +15,7 @@ from app.schemas import (
     AlertResponse, AuditResponse
 )
 from app.logic import manager, check_gps_anomaly, get_risk_level, update_integrity_score
+from blockchain.ledger import ledger
 
 def init_db():
     Base.metadata.create_all(bind=engine)
@@ -101,7 +102,25 @@ async def submit_gps(shipment_id: str, request: GPSRequest, db: Session = Depend
     shipment.current_lng = request.longitude
     shipment.updated_at = datetime.now(timezone.utc)
     
-    db.add(AuditRecord(shipment_id=shipment_id, event_type="GPS_UPDATE", integrity_score=shipment.integrity_score))
+    tx_hash = ledger.append({
+        "shipment_id": shipment_id,
+        "event_type": "GPS_UPDATE",
+        "risk": shipment.risk_level,
+        "integrity_score": shipment.integrity_score,
+        "anomaly": is_anomaly,
+        "anomaly_type": anomaly_type,
+        "latitude": request.latitude,
+        "longitude": request.longitude,
+    })
+    block_number = len(ledger.blocks) - 1
+
+    db.add(AuditRecord(
+        shipment_id=shipment_id,
+        event_type="GPS_UPDATE",
+        integrity_score=shipment.integrity_score,
+        tx_hash=tx_hash,
+        block_number=block_number,
+    ))
     db.commit()
     
     return GPSResponse(shipment_id=shipment_id, anomaly=is_anomaly, anomaly_type=anomaly_type, risk_level=shipment.risk_level, integrity_score=shipment.integrity_score, blockchain_record_pending=False)
