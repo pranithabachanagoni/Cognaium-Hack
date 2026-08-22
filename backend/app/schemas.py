@@ -49,10 +49,10 @@ class ShipmentDetail(BaseModel):
         orm_mode = True
 
 class GPSRequest(BaseModel):
-    latitude: float
-    longitude: float
-    speed: float
-    heading: float
+    latitude: float = Field(..., ge=-90.0, le=90.0)
+    longitude: float = Field(..., ge=-180.0, le=180.0)
+    speed: float = Field(..., ge=0.0)
+    heading: float = Field(..., ge=0.0, le=360.0)
     timestamp: datetime
 
 class GPSResponse(BaseModel):
