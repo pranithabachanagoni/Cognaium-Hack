@@ -16,4 +16,25 @@ export interface Shipment {
   status: ShipmentStatus;
   integrityScore: number;
   riskLevel: RiskLevel;
+  currentLocation: string;
+  lastUpdated: string;
+}
+
+export interface Alert {
+  id: string;
+  type: string;
+  title: string;
+  reason: string;
+  riskLevel: RiskLevel;
+  timestamp: string;
+  location: string;
+}
+
+export interface AuditRecord {
+  id: string;
+  timestamp: string;
+  score: number;
+  riskLevel: RiskLevel;
+  reason: string;
+  transactionHash: string;
 }

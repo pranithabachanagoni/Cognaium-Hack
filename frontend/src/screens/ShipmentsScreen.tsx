@@ -93,7 +93,7 @@ export const ShipmentsScreen: React.FC = () => {
             <ShipmentCard
               shipment={item}
               onPress={() => {
-                console.log(`Shipment card clicked: ${item.id}`);
+                navigation.navigate('ShipmentDetails', { shipmentId: item.id });
               }}
             />
           )}
