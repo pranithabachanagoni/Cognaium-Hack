@@ -63,6 +63,11 @@ def utc_now():
 
 def auth_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)):
     try:
+        payload = jwt.decode(
+            credentials.credentials,
+            SECRET,
+            algorithms=[ALGORITHM],
+        )
         username = payload.get("sub")
         if not username or username not in USERS:
             raise HTTPException(status_code=401, detail="Invalid token")
