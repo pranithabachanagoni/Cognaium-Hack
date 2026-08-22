@@ -8,6 +8,8 @@ from app.models import Shipment, GPSEvent, Alert, AuditRecord
 from app.schemas import GPSRequest, GPSResponse
 from app.services.integrity import check_gps_anomaly, get_risk_level, update_integrity_score
 from app.websockets import manager
+from app.services.ml_detection import detect_gps_anomaly
+from blockchain.ledger import ledger
 
 router = APIRouter(prefix="/shipments", tags=["GPS"])
 
@@ -32,7 +34,30 @@ async def submit_gps(shipment_id: str, request: GPSRequest, db: Session = Depend
 
     # We decouple the anomaly rules (integrity engine) from the API routing layer.
     # This allows a machine learning service to seamlessly replace this function call later.
-    is_anomaly, anomaly_type = check_gps_anomaly(request, previous_gps)
+    # Existing deterministic integrity rules.
+    rule_anomaly, rule_anomaly_type = check_gps_anomaly(request, previous_gps)
+
+    # ML trajectory analysis. The previous GPS point is used as the
+    # reference because the current team schema has no fixed expected
+    # route coordinates.
+    ml_result = detect_gps_anomaly(
+        latitude=request.latitude,
+        longitude=request.longitude,
+        speed_kmh=request.speed,
+        previous_lat=previous_gps.latitude if previous_gps else None,
+        previous_lng=previous_gps.longitude if previous_gps else None,
+    )
+
+    # Preserve the existing rule-based detector while allowing the ML
+    # detector to identify additional anomalies.
+    is_anomaly = rule_anomaly or ml_result["anomaly"]
+
+    if rule_anomaly:
+        anomaly_type = rule_anomaly_type
+    elif ml_result["anomaly"]:
+        anomaly_type = "ML_ANOMALY"
+    else:
+        anomaly_type = None
     
     if is_anomaly:
         shipment.integrity_score = update_integrity_score(shipment.integrity_score, anomaly_type)
@@ -91,6 +116,19 @@ async def submit_gps(shipment_id: str, request: GPSRequest, db: Session = Depend
         integrity_score=shipment.integrity_score,
     )
     db.add(audit)
+    db.flush()
+
+    # Append the audit event to the local tamper-evident ledger.
+    block = ledger.append({
+        "shipment_id": shipment_id,
+        "event_type": "GPS_UPDATE",
+        "risk": shipment.risk_level,
+        "integrity_score": shipment.integrity_score,
+        "audit_id": audit.id,
+    })
+
+    audit.tx_hash = block
+    audit.block_number = len(ledger.blocks) - 1
 
     db.commit()
     
