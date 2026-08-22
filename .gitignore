@@ -1,0 +1,5 @@
+
+# Local development
+__pycache__/
+*.py[cod]
+backend/chaintrace.db
