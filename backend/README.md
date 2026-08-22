@@ -2,6 +2,14 @@
 
 This is the FastAPI backend for the ChainTrace hackathon project. It provides the REST and WebSocket APIs needed by the frontend dashboard and mobile apps.
 
+## Architecture & Code Structure
+
+We have consolidated the entire backend into 4 core files to make it as simple as possible for the hackathon:
+- `app/main.py`: Contains the FastAPI application, CORS setup, and all route definitions.
+- `app/logic.py`: Contains the Integrity engine heuristics and the WebSocket connection manager.
+- `app/models.py`: Contains the SQLAlchemy database connection setup and database models.
+- `app/schemas.py`: Contains the Pydantic schemas defining the API contracts.
+
 ## Setup and Installation
 
 ### 1. Requirements
