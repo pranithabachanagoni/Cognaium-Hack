@@ -1,5 +1,8 @@
+import os
+import secrets
+
 import jwt
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -8,7 +11,9 @@ from datetime import datetime, timezone, timedelta
 from typing import List
 from blockchain.ledger import ledger
 
-SECRET_KEY = "hackathon-secret-key-123"
+# Falls back to a random per-process key rather than a secret literal in
+# source; set CHAINTRACE_SECRET_KEY to pin it across restarts/instances.
+SECRET_KEY = os.environ.get("CHAINTRACE_SECRET_KEY") or secrets.token_hex(32)
 ALGORITHM = "HS256"
 security = HTTPBearer()
 
@@ -29,12 +34,20 @@ from app.schemas import (
     AlertResponse, AuditResponse
 )
 from app.logic import manager, check_gps_anomaly, get_risk_level, update_integrity_score
+from app.security import DEMO_OPERATOR_PASSWORD, check_and_consume_nonce, hash_password, verify_password
+
+DEFAULT_CORS_ORIGINS = "http://localhost:19006,http://localhost:8081,http://localhost:3000,exp://localhost:19000"
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CHAINTRACE_CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",")
+    if origin.strip()
+]
 
 def init_db():
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         if not db.query(User).filter(User.user_id == "operator_01").first():
-            db.add(User(user_id="operator_01", password_hash="demo-hash", role="operator"))
+            db.add(User(user_id="operator_01", password_hash=hash_password(DEMO_OPERATOR_PASSWORD), role="operator"))
         if not db.query(Shipment).filter(Shipment.shipment_id == "CT-1042").first():
             db.add(Shipment(shipment_id="CT-1042", shipment_type="pharmaceutical", status="IN_TRANSIT", integrity_score=9.5, risk_level="LOW"))
         db.commit()
@@ -48,7 +61,7 @@ app = FastAPI(title="ChainTrace API", description="Backend API for the ChainTrac
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -59,13 +72,18 @@ def health_check():
     return HealthResponse(status="ok")
 
 @app.post("/auth/login", response_model=LoginResponse, tags=["Auth"])
-def login(request: LoginRequest):
+def login(request: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.user_id == request.user_id).first()
+    if not user or not verify_password(request.password, user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     payload = {"sub": request.user_id, "exp": datetime.now(timezone.utc) + timedelta(hours=24)}
     token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
     return LoginResponse(access_token=token, token_type="bearer")
 
 @app.post("/auth/verify", response_model=VerifyResponse, tags=["Auth"])
-def verify_device(request: VerifyRequest):
+def verify_device(request: VerifyRequest, current_user: str = Depends(get_current_user)):
+    if not check_and_consume_nonce(request.device_id, request.nonce):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Nonce already used or expired")
     return VerifyResponse(authenticated=True, device_id=request.device_id)
 
 @app.get("/shipments", response_model=List[ShipmentListItem], tags=["Shipments"])
@@ -105,15 +123,18 @@ async def submit_gps(shipment_id: str, request: GPSRequest, db: Session = Depend
         if req_dt <= prev_dt:
             raise HTTPException(status_code=400, detail="Duplicate or outdated GPS reading")
 
-    is_anomaly, anomaly_type = check_gps_anomaly(request, previous_gps)
-    
+    is_anomaly, anomaly_type = check_gps_anomaly(request, previous_gps, shipment.shipment_type)
+
+    # Score/risk update runs on every ping (not just anomalous ones) so a
+    # shipment that behaves well after a flag gradually recovers instead of
+    # staying pinned at its worst-ever score.
+    shipment.integrity_score = update_integrity_score(shipment.integrity_score, anomaly_type if is_anomaly else None)
+    shipment.risk_level = get_risk_level(shipment.integrity_score)
+
     if is_anomaly:
-        shipment.integrity_score = update_integrity_score(shipment.integrity_score, anomaly_type)
-        shipment.risk_level = get_risk_level(shipment.integrity_score)
-        
         msg = f"Anomaly detected: {anomaly_type}"
         db.add(Alert(shipment_id=shipment_id, alert_type="GPS_ANOMALY", risk_level=shipment.risk_level, message=msg, latitude=request.latitude, longitude=request.longitude, timestamp=datetime.now(timezone.utc)))
-        
+
         await manager.broadcast_to_shipment(shipment_id, {
             "type": "ANOMALY_ALERT", "shipment_id": shipment_id, "risk_level": shipment.risk_level, "integrity_score": shipment.integrity_score, "message": msg
         })
@@ -134,16 +155,16 @@ async def submit_gps(shipment_id: str, request: GPSRequest, db: Session = Depend
     return GPSResponse(shipment_id=shipment_id, anomaly=is_anomaly, anomaly_type=anomaly_type, risk_level=shipment.risk_level, integrity_score=shipment.integrity_score, blockchain_record_pending=False)
 
 @app.get("/shipments/{shipment_id}/alerts", response_model=List[AlertResponse], tags=["Alerts"])
-def get_alerts(shipment_id: str, db: Session = Depends(get_db)):
+def get_alerts(shipment_id: str, db: Session = Depends(get_db), limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
     if not db.query(Shipment).filter(Shipment.shipment_id == shipment_id).first():
         raise HTTPException(status_code=404, detail="Shipment not found")
-    return db.query(Alert).filter(Alert.shipment_id == shipment_id).order_by(Alert.timestamp.desc()).all()
+    return db.query(Alert).filter(Alert.shipment_id == shipment_id).order_by(Alert.timestamp.desc()).offset(offset).limit(limit).all()
 
 @app.get("/shipments/{shipment_id}/audit", response_model=List[AuditResponse], tags=["Audit"])
-def get_audit(shipment_id: str, db: Session = Depends(get_db)):
+def get_audit(shipment_id: str, db: Session = Depends(get_db), limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
     if not db.query(Shipment).filter(Shipment.shipment_id == shipment_id).first():
         raise HTTPException(status_code=404, detail="Shipment not found")
-    return db.query(AuditRecord).filter(AuditRecord.shipment_id == shipment_id).order_by(AuditRecord.timestamp.desc()).all()
+    return db.query(AuditRecord).filter(AuditRecord.shipment_id == shipment_id).order_by(AuditRecord.timestamp.desc()).offset(offset).limit(limit).all()
 
 @app.websocket("/ws/shipments/{shipment_id}")
 async def websocket_endpoint(websocket: WebSocket, shipment_id: str):
