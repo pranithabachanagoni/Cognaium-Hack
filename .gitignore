@@ -62,6 +62,9 @@ coverage.xml
 *.sqlite3
 *.db
 
+# Local audit ledger state
+backend/ledger_data.json
+
 # macOS
 .DS_Store
 

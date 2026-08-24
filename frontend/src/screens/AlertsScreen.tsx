@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { Alert } from '../types/shipment';
-import { api } from '../services/api';
+import { api, subscribeToShipmentAlerts } from '../services/api';
 import { AlertCard } from '../components/AlertCard';
 import { theme } from '../theme/theme';
 import { Feather } from '@expo/vector-icons';
@@ -39,6 +39,13 @@ export const AlertsScreen: React.FC = () => {
       }
     };
     fetchAlerts();
+
+    // New alerts land here the instant the backend flags an anomaly, rather
+    // than only appearing the next time this screen is opened.
+    const unsubscribe = subscribeToShipmentAlerts(shipmentId, () => {
+      api.getAlerts(shipmentId).then(setAlerts).catch(() => {});
+    });
+    return unsubscribe;
   }, [shipmentId]);
 
   return (

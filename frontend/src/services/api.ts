@@ -2,8 +2,45 @@ import { Shipment, Alert, AuditRecord, ShipmentStatus, RiskLevel } from '../type
 import { Platform } from 'react-native';
 
 const API_BASE_URL = Platform.OS === 'android' ? 'http://10.0.2.2:8000' : 'http://localhost:8000';
+const WS_BASE_URL = API_BASE_URL.replace(/^http/, 'ws');
 
 let authToken: string | null = null;
+
+export interface ShipmentAlertMessage {
+  type: 'ANOMALY_ALERT';
+  shipment_id: string;
+  risk_level: RiskLevel;
+  integrity_score: number;
+  message: string;
+}
+
+/**
+ * Opens a push connection for a shipment's anomaly alerts so the UI updates
+ * the instant the backend flags something, instead of waiting for the next
+ * REST refetch. Returns a teardown function to close the socket.
+ */
+export const subscribeToShipmentAlerts = (
+  shipmentId: string,
+  onMessage: (message: ShipmentAlertMessage) => void,
+  onError?: (event: Event) => void
+): (() => void) => {
+  const socket = new WebSocket(`${WS_BASE_URL}/ws/shipments/${shipmentId}`);
+  socket.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data?.type === 'ANOMALY_ALERT') {
+        onMessage(data as ShipmentAlertMessage);
+      }
+    } catch (e) {
+      console.error('subscribeToShipmentAlerts: failed to parse message', e);
+    }
+  };
+  socket.onerror = (event) => {
+    onError?.(event);
+  };
+
+  return () => socket.close();
+};
 
 const getHeaders = () => {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };

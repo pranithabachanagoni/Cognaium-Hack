@@ -12,7 +12,7 @@ import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Shipment } from '../types/shipment';
-import { api } from '../services/api';
+import { api, subscribeToShipmentAlerts } from '../services/api';
 import { IntegrityScore } from '../components/IntegrityScore';
 import { theme } from '../theme/theme';
 import { Feather } from '@expo/vector-icons';
@@ -44,6 +44,17 @@ export const ShipmentDetailsScreen: React.FC = () => {
       }
     };
     fetchDetails();
+  }, [shipmentId]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToShipmentAlerts(shipmentId, (message) => {
+      setShipment((current) =>
+        current
+          ? { ...current, integrityScore: message.integrity_score, riskLevel: message.risk_level }
+          : current
+      );
+    });
+    return unsubscribe;
   }, [shipmentId]);
 
   const getStatusStyle = (status: string) => {

@@ -13,10 +13,10 @@ def run_tests():
     r = requests.post(f"{BASE_URL}/shipments/CT-1042/gps", json={
         "latitude": 28.0, "longitude": 77.0, "speed": 40.0, "heading": 90.0, "timestamp": "2026-08-22T10:00:00Z"
     })
-    print(f"Status: {r.status_code}") # Should be 401
+    print(f"Status: {r.status_code}") # Should be 403 (HTTPBearer's default for a missing Authorization header)
 
     print("\n3. Testing Auth Login...")
-    r = requests.post(f"{BASE_URL}/auth/login", json={"user_id": "operator", "password": "pwd"})
+    r = requests.post(f"{BASE_URL}/auth/login", json={"user_id": "operator_01", "password": "chaintrace-demo-2026"})
     token = r.json().get("access_token")
     print(f"Token obtained: {token[:15]}...")
 
